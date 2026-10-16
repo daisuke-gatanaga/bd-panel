@@ -11,6 +11,7 @@
   function rid(p) { var a = new Uint8Array(3); crypto.getRandomValues(a); return p + "_" + Array.from(a).map(function (x) { return x.toString(16).padStart(2, "0"); }).join(""); }
   function clone(x) { return JSON.parse(JSON.stringify(x)); }
   function nowIso() { return new Date().toISOString().replace(/\.\d+Z$/, "+00:00"); }
+  function normIds(ids) { ids = ids || []; return ids.filter(function (x, i) { return ids.indexOf(x) === i && !ids.some(function (y) { return y.indexOf(x + "/") === 0; }); }); }
   function money(n) { return "$" + Math.round(n).toLocaleString(); }
 
   // ---------- plan applier (mirrors scripts/apply_plan.py) ----------
@@ -79,12 +80,14 @@
     function upd(t, it) {
       Object.keys(it.set || {}).forEach(function (f) { var v = it.set[f]; if (v === null || v === "" || (Array.isArray(v) && !v.length)) delete t[f]; else t[f] = v; });
       Object.keys(it.add || {}).forEach(function (f) { t[f] = t[f] || []; it.add[f].forEach(function (v) { if (t[f].indexOf(v) < 0) t[f].push(v); }); });
+      if (t.sectors) t.sectors = normIds(t.sectors);
+      if (t.tags) t.tags = normIds(t.tags);
       resolve(t); t.updated = stamp;
     }
     plan.orgs.forEach(function (it) {
       if (it.op === "new") {
         if (orgs.some(function (o) { return fold(o.name) === fold(it.name); })) { errs.push("Org " + it.name + " already exists"); return; }
-        var r = strip(it); r.id = refmap[it.ref]; chkEnum(r.kind, "org_kinds", r.name); chkEnum(r.relationship, "org_relationships", r.name); chkTags(r.sectors, r.name);
+        var r = strip(it); r.id = refmap[it.ref]; if (r.sectors) r.sectors = normIds(r.sectors); chkEnum(r.kind, "org_kinds", r.name); chkEnum(r.relationship, "org_relationships", r.name); chkTags(r.sectors, r.name);
         r.created = r.created || stamp; r.updated = stamp; orgs.push(resolve(r)); log.push("Add org " + r.name);
       } else {
         var o = orgs.filter(function (x) { return x.id === it.id; })[0];
@@ -114,7 +117,7 @@
     actsOf(files).forEach(function (x) { byAct[x[1].id] = x; });
     plan.activities.forEach(function (it) {
       if (it.op === "new") {
-        var r = strip(it); r.id = refmap[it.ref];
+        var r = strip(it); r.id = refmap[it.ref]; if (r.sectors) r.sectors = normIds(r.sectors);
         ["type", "title", "date", "role", "status"].forEach(function (f) { if (!r[f]) errs.push("Activity is missing " + f); });
         chkEnum(r.type, "activity_types", r.title); chkEnum(r.role, "roles", r.title); chkEnum(r.status, "statuses", r.title);
         chkEnum((r.cost || {}).paid_by, "paid_by", r.title); chkTags(r.sectors, r.title);
@@ -185,6 +188,12 @@
   function orgs() { return (V()["orgs.json"].orgs || []); }
   function tagList() { return cfg().taxonomy.sectors.tags; }
   function activeTags() { return tagList().filter(function (t) { return (t.status || "active") === "active"; }); }
+  function tagById(id) { return tagList().filter(function (t) { return t.id === id; })[0]; }
+  function tagLabel(id) { var t = tagById(id); if (!t) return id; var p = t.parent && tagById(t.parent); return p ? p.label + " \u203a " + t.label : t.label; }
+  function tops() { return activeTags().filter(function (t) { return !t.parent; }); }
+  function kids(pid) { return activeTags().filter(function (t) { return t.parent === pid; }); }
+  function inSec(list, sec) { return !sec || (list || []).some(function (x) { return x === sec || x.indexOf(sec + "/") === 0; }); }
+  function secLine(list) { return (list || []).map(tagLabel).join(", "); }
   function nm(id) {
     var o = orgs().filter(function (x) { return x.id === id; })[0]; if (o) return o.name;
     var c = cons().filter(function (x) { return x.id === id; })[0]; if (c) return c.name;
@@ -242,7 +251,9 @@
     ".bd .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.bd .err{color:var(--text-danger);font-size:13px;margin:6px 0}" +
     ".bd .save{margin:14px 0 0;padding:10px 12px;border-radius:var(--radius,8px);background:var(--bg-accent);color:var(--text-accent);display:flex;gap:10px;align-items:center;flex-wrap:wrap}" +
     ".bd .save span{flex:1}.bd .note{white-space:pre-wrap;font-size:13px;margin-top:6px}.bd h3{font-size:13px;font-weight:500;color:var(--text-secondary);margin:14px 0 4px}" +
-    ".bd .empty{color:var(--text-muted);font-size:13px;padding:8px 0}";
+    ".bd .empty{color:var(--text-muted);font-size:13px;padding:8px 0}.bd [hidden]{display:none!important}" +
+    ".bd .sub{margin:2px 0 4px 14px;padding-left:8px;border-left:2px solid var(--border)}.bd .chip.sm{font-size:11.5px}" +
+    ".bd .row.indent{padding-left:22px}.bd .row.muted .t{color:var(--text-muted)}.bd select[data-sec]{max-width:220px}";
 
   function chips(opts, cur, act) { return opts.map(function (o) { return '<button class="chip' + (o[0] === cur ? " on" : "") + '" data-act="' + act + '" data-v="' + esc(o[0]) + '">' + esc(o[1]) + "</button>"; }).join(""); }
   function sel(name, opts, cur, blank) {
@@ -250,7 +261,15 @@
   }
   function field(label, html) { return "<label>" + esc(label) + html + "</label>"; }
   function inp(name, val, type) { return '<input name="' + name + '" type="' + (type || "text") + '" value="' + esc(val == null ? "" : val) + '">'; }
-  function tagPicker(cur) { cur = cur || []; return '<div data-tags>' + activeTags().map(function (t) { return '<button class="chip' + (cur.indexOf(t.id) >= 0 ? " on" : "") + '" data-act="tog" data-v="' + esc(t.id) + '">' + esc(t.label) + "</button>"; }).join("") + "</div>"; }
+  function tagPicker(cur) {
+    var on = {};
+    (cur || []).forEach(function (id) { on[id] = 1; var t = tagById(id); if (t && t.parent) on[t.parent] = 1; });
+    var chip = function (t, sm) { return '<button class="chip' + (sm ? " sm" : "") + (on[t.id] ? " on" : "") + '" data-act="tog" data-v="' + esc(t.id) + '">' + esc(t.label) + (!sm && kids(t.id).length ? " \u25be" : "") + "</button>"; };
+    return '<div data-tags><div class="tops">' + tops().map(function (t) { return chip(t); }).join("") + "</div>" +
+      tops().filter(function (t) { return kids(t.id).length; }).map(function (t) {
+        return '<div class="sub" data-sub-of="' + esc(t.id) + '"' + (on[t.id] ? "" : " hidden") + '><span class="m">' + esc(t.label) + " \u203a </span>" + kids(t.id).map(function (k) { return chip(k, true); }).join("") + "</div>";
+      }).join("") + "</div>";
+  }
   function isNew(kind, id) { return S.plan[kind].some(function (x) { return x.op === "new" && x.ref === id; }); }
 
   function header() {
@@ -258,7 +277,7 @@
     var bud = (cfg().budget || {})[y];
     var cards = [["upcoming", "Upcoming", up], ["reconnect", "Reconnect due", od], ["contacts", "Contacts", cons().length], ["spend", "Spend " + y, money(spendYear(y)) + (bud ? " / " + money(bud) : "")]];
     return '<div class="cards">' + cards.map(function (c) { return '<div class="card' + (S.card === c[0] ? " on" : "") + '" data-act="card" data-v="' + c[0] + '"><div class="l">' + esc(c[1]) + '</div><div class="n">' + esc(c[2]) + "</div></div>"; }).join("") + "</div>" +
-      '<div class="tabs">' + [["acts", "Activities"], ["cons", "Contacts"], ["orgs", "Organizations"], ["tags", "Sector tags"]].map(function (t) { return '<button class="' + (S.tab === t[0] ? "on" : "") + '" data-act="tab" data-v="' + t[0] + '">' + t[1] + "</button>"; }).join("") +
+      '<div class="tabs">' + [["acts", "Activities"], ["cons", "Contacts"], ["orgs", "Organizations"], ["tags", "Sectors"]].map(function (t) { return '<button class="' + (S.tab === t[0] ? "on" : "") + '" data-act="tab" data-v="' + t[0] + '">' + t[1] + "</button>"; }).join("") +
       '<button data-act="quick">Log something +</button>' + (S.mode === "standalone" ? '<button data-act="reload">Refresh</button>' : "") + "</div>";
   }
 
@@ -266,7 +285,7 @@
     var open = S.open === a.id, st = a.status;
     var h = '<div class="row" data-row="' + esc(a.id) + '" data-kind="activities"><div class="h" data-act="open" data-v="' + esc(a.id) + '"><span class="m">' + esc(a.date) + '</span><span class="t">' + esc(a.title) + '</span>' +
       (isNew("activities", a.id) ? '<span class="b new">new</span>' : "") + '<span class="b ' + (st === "confirmed" ? "acc" : st === "proposed" || st === "invited" ? "warn" : st === "done" ? "ok" : "") + '">' + esc(st) + '</span><span class="b">' + esc(a.type.replace(/_/g, " ")) + "</span></div>" +
-      '<div class="m">' + esc([a.role, a.location, (a.org_ids || []).map(nm).join(", ")].filter(Boolean).join(" · ")) + "</div>";
+      '<div class="m">' + esc([a.role, a.location, (a.org_ids || []).map(nm).join(", "), secLine(a.sectors)].filter(Boolean).join(" · ")) + "</div>";
     if (!open) return h + "</div>";
     var e = cfg().enums, cost = a.cost || {};
     h += '<div class="det"><div class="grid">' +
@@ -303,7 +322,7 @@
     var open = S.open === o.id, nc = cons().filter(function (c) { return c.org_id === o.id; }), na = allActs().filter(function (a) { return (a.org_ids || []).indexOf(o.id) >= 0; });
     var h = '<div class="row" data-row="' + esc(o.id) + '" data-kind="orgs"><div class="h" data-act="open" data-v="' + esc(o.id) + '"><span class="t">' + esc(o.name) + "</span>" +
       (isNew("orgs", o.id) ? '<span class="b new">new</span>' : "") + (o.target ? '<span class="b acc">target</span>' : "") + (o.relationship ? '<span class="b">' + esc(o.relationship.replace(/_/g, " ")) + "</span>" : "") + "</div>" +
-      '<div class="m">' + esc([(o.sectors || []).join(", "), nc.length + " contact" + (nc.length === 1 ? "" : "s"), na.length + " activit" + (na.length === 1 ? "y" : "ies")].filter(Boolean).join(" · ")) + "</div>";
+      '<div class="m">' + esc([secLine(o.sectors), nc.length + " contact" + (nc.length === 1 ? "" : "s"), na.length + " activit" + (na.length === 1 ? "y" : "ies")].filter(Boolean).join(" · ")) + "</div>";
     if (!open) return h + "</div>";
     var e = cfg().enums;
     h += '<div class="det"><div class="grid">' + field("Relationship", sel("relationship", e.org_relationships || [], o.relationship, true)) + field("Kind", sel("kind", e.org_kinds, o.kind, true)) +
@@ -317,23 +336,31 @@
 
   function tagsView() {
     var use = {};
-    allActs().concat(orgs()).forEach(function (r) { (r.sectors || []).forEach(function (t) { use[t] = (use[t] || 0) + 1; }); });
-    cons().forEach(function (c) { (c.tags || []).forEach(function (t) { use[t] = (use[t] || 0) + 1; }); });
+    function bump(id) { use[id] = (use[id] || 0) + 1; var t = tagById(id); if (t && t.parent) use[t.parent] = (use[t.parent] || 0) + 1; }
+    allActs().concat(orgs()).forEach(function (r) { (r.sectors || []).forEach(bump); });
+    cons().forEach(function (c) { (c.tags || []).forEach(bump); });
     var act = activeTags();
-    var h = tagList().map(function (t) {
+    function row(t, indent) {
       var st = t.status || "active", open = S.open === "tag:" + t.id;
-      var r = '<div class="row" data-row="tag:' + esc(t.id) + '"><div class="h" data-act="open" data-v="tag:' + esc(t.id) + '"><span class="t">' + esc(t.label) + '</span><span class="m">' + esc(t.id) + "</span>" +
-        (t.origin === "claude" ? '<span class="b warn">Claude</span>' : "") + (st !== "active" ? '<span class="b">' + esc(st) + (t.merged_into ? " → " + esc(t.merged_into) : "") + "</span>" : "") + '<span class="b">' + (use[t.id] || 0) + " used</span></div>";
+      var r = '<div class="row' + (indent ? " indent" : "") + (st !== "active" ? " muted" : "") + '" data-row="tag:' + esc(t.id) + '"><div class="h" data-act="open" data-v="tag:' + esc(t.id) + '"><span class="t">' + esc(t.label) + "</span>" +
+        (t.origin === "claude" ? '<span class="b warn">Claude</span>' : "") + (st !== "active" ? '<span class="b">' + esc(st) + (t.merged_into ? " \u2192 " + esc(tagLabel(t.merged_into)) : "") + "</span>" : "") + '<span class="b">' + (use[t.id] || 0) + " used</span></div>";
       if (open && st === "active") {
-        r += '<div class="det">' + (t.aliases && t.aliases.length ? '<div class="m">Aliases: ' + esc(t.aliases.join(", ")) + "</div>" : "") + (t.description ? '<div class="m">' + esc(t.description) + "</div>" : "") +
-          '<div class="grid" style="margin-top:8px">' + field("New label", inp("label", t.label)) + field("Add aliases (comma-separated)", inp("aliases", "")) + field("Merge into", sel("into", act.filter(function (x) { return x.id !== t.id; }).map(function (x) { return [x.id, x.label]; }), "", true)) + "</div>" +
-          '<div class="err" data-err></div><div class="acts"><button data-act="tag-save" data-v="' + esc(t.id) + '">Apply</button><button data-act="tag-retire" data-v="' + esc(t.id) + '">Retire</button><button data-act="open" data-v="">Close</button></div></div>';
+        r += '<div class="det">' + (t.aliases && t.aliases.length ? '<div class="m">Also matches: ' + esc(t.aliases.join(", ")) + "</div>" : "") + (t.description ? '<div class="m">' + esc(t.description) + "</div>" : "") +
+          '<div class="grid" style="margin-top:8px">' + field("Rename", inp("label", t.label)) + field("Add aliases (comma-separated)", inp("aliases", "")) +
+          field("Merge into", sel("into", act.filter(function (x) { return x.id !== t.id && x.parent !== t.id; }).map(function (x) { return [x.id, tagLabel(x.id)]; }), "", true)) + "</div>" +
+          '<div class="err" data-err></div><div class="acts"><button data-act="tag-save" data-v="' + esc(t.id) + '">Apply</button><button data-act="tag-retire" data-v="' + esc(t.id) + '">Retire</button><button data-act="open" data-v="">Close</button></div>' +
+          (!t.parent ? "<h3>Add a subsector under " + esc(t.label) + '</h3><div class="grid">' + field("Subsector name", inp("sub_label", "")) + field("Aliases (comma-separated)", inp("sub_aliases", "")) + field("What it covers", inp("sub_desc", "")) + "</div>" +
+            '<div class="acts"><button data-act="tag-add" data-parent="' + esc(t.id) + '">Add subsector</button></div>' : "") + "</div>";
       }
       return r + "</div>";
-    }).join("");
-    h += '<h3>Add a sector tag</h3><div class="det" data-row="tag:new"><div class="grid">' + field("Label", inp("label", "")) + field("Parent (optional)", sel("parent", act.filter(function (x) { return !x.parent; }).map(function (x) { return [x.id, x.label]; }), "", true)) +
-      field("Short id (optional)", inp("id", "")) + field("Aliases (comma-separated)", inp("aliases", "")) + "</div>" + field("What it covers", inp("description", "")) +
-      '<div class="err" data-err></div><div class="acts"><button data-act="tag-add">Add tag</button></div></div>';
+    }
+    var h = "";
+    tops().forEach(function (t) { h += row(t, false); kids(t.id).forEach(function (k) { h += row(k, true); }); });
+    var inactive = tagList().filter(function (t) { return (t.status || "active") !== "active"; });
+    if (inactive.length) h += "<h3>Merged or retired</h3>" + inactive.map(function (t) { return row(t, !!t.parent); }).join("");
+    h += '<h3>Add a sector</h3><div class="det" data-row="tag:new"><div class="grid">' + field("Sector name", inp("label", "")) + field("Short id (optional)", inp("id", "")) +
+      field("Aliases (comma-separated)", inp("aliases", "")) + "</div>" + field("What it covers", inp("description", "")) +
+      '<div class="m">To add a subsector, open its sector above.</div><div class="err" data-err></div><div class="acts"><button data-act="tag-add">Add sector</button></div></div>';
     return h;
   }
 
@@ -347,13 +374,19 @@
       '<div class="err" data-err></div><div class="acts"><button data-act="quick-add">Add</button><button data-act="tab" data-v="' + (S.prevTab || "acts") + '">Cancel</button></div></div>';
   }
 
+  function secSelect() {
+    var cur = S.sec[S.tab] || "", o = '<select data-sec><option value="">All sectors</option>';
+    tops().forEach(function (t) { o += '<option value="' + esc(t.id) + '"' + (cur === t.id ? " selected" : "") + ">" + esc(t.label) + "</option>";
+      kids(t.id).forEach(function (k) { o += '<option value="' + esc(k.id) + '"' + (cur === k.id ? " selected" : "") + ">\u2003" + esc(k.label) + "</option>"; }); });
+    return o + "</select>";
+  }
   function listView() {
-    var q = fold(S.q), f = S.filter[S.tab] || "all";
+    var q = fold(S.q), f = S.filter[S.tab] || "all", sec = S.sec[S.tab] || "";
     if (S.tab === "acts") {
       var acts = allActs().filter(function (a) { return !q || fold(a.title + " " + (a.org_ids || []).map(nm).join(" ") + " " + (a.location || "")).indexOf(q) >= 0; })
-        .filter(function (a) { return f === "all" || (f === "upcoming" ? isUpcoming(a) : !isUpcoming(a)); });
+        .filter(function (a) { return (f === "all" || (f === "upcoming" ? isUpcoming(a) : !isUpcoming(a))) && inSec(a.sectors, sec); });
       var up = acts.filter(isUpcoming).sort(function (a, b) { return a.date < b.date ? -1 : 1; }), past = acts.filter(function (a) { return !isUpcoming(a); }).sort(function (a, b) { return a.date > b.date ? -1 : 1; });
-      return '<div class="bar"><input type="search" data-q placeholder="Search activities" value="' + esc(S.q) + '">' + chips([["all", "All"], ["upcoming", "Upcoming"], ["past", "Past"]], f, "filter") + "</div>" +
+      return '<div class="bar"><input type="search" data-q placeholder="Search activities" value="' + esc(S.q) + '">' + secSelect() + chips([["all", "All"], ["upcoming", "Upcoming"], ["past", "Past"]], f, "filter") + "</div>" +
         (up.length ? "<h3>Upcoming</h3>" + up.map(rowActivity).join("") : "") + (past.length ? "<h3>Past</h3>" + past.map(rowActivity).join("") : "") + (!acts.length ? '<div class="empty">No activities match.</div>' : "");
     }
     if (S.tab === "cons") {
@@ -365,8 +398,8 @@
     }
     if (S.tab === "orgs") {
       var os = orgs().filter(function (o) { return !q || fold(o.name + " " + (o.domains || []).join(" ")).indexOf(q) >= 0; })
-        .filter(function (o) { return f === "all" || (f === "targets" ? o.target : o.relationship === f); }).sort(function (a, b) { return (b.target ? 1 : 0) - (a.target ? 1 : 0) || a.name.localeCompare(b.name); });
-      return '<div class="bar"><input type="search" data-q placeholder="Search organizations" value="' + esc(S.q) + '">' + chips([["all", "All"], ["targets", "Targets"], ["client", "Clients"], ["prospect", "Prospects"], ["organizer", "Organizers"]], f, "filter") + "</div>" +
+        .filter(function (o) { return (f === "all" || (f === "targets" ? o.target : o.relationship === f)) && inSec(o.sectors, sec); }).sort(function (a, b) { return (b.target ? 1 : 0) - (a.target ? 1 : 0) || a.name.localeCompare(b.name); });
+      return '<div class="bar"><input type="search" data-q placeholder="Search organizations" value="' + esc(S.q) + '">' + secSelect() + chips([["all", "All"], ["targets", "Targets"], ["client", "Clients"], ["prospect", "Prospects"], ["organizer", "Organizers"]], f, "filter") + "</div>" +
         (os.length ? os.map(rowOrg).join("") : '<div class="empty">No organizations match.</div>');
     }
     if (S.tab === "tags") return tagsView();
@@ -391,7 +424,7 @@
     var v = {};
     row.querySelectorAll("input[name],select[name],textarea[name]").forEach(function (el) { v[el.name] = el.value.trim(); });
     var t = row.querySelector("[data-tags]");
-    if (t) v._tags = Array.from(t.querySelectorAll(".chip.on")).map(function (b) { return b.getAttribute("data-v"); });
+    if (t) v._tags = normIds(Array.from(t.querySelectorAll(".chip.on")).map(function (b) { return b.getAttribute("data-v"); }));
     return v;
   }
   function err(row, m) { var e = row.querySelector("[data-err]"); if (e) e.textContent = m || ""; return !m; }
@@ -407,7 +440,15 @@
     if (act === "card") { S.card = v; S.q = ""; S.open = null; if (v === "upcoming") { S.tab = "acts"; S.filter.acts = "upcoming"; } else if (v === "reconnect") { S.tab = "cons"; S.filter.cons = "due"; } else if (v === "contacts") { S.tab = "cons"; S.filter.cons = "all"; } else { S.tab = "acts"; S.filter.acts = "all"; } render(); return; }
     if (act === "filter") { S.filter[S.tab] = v; S.open = null; renderList(); return; }
     if (act === "open") { S.open = S.open === v ? null : v; renderList(); return; }
-    if (act === "tog") { b.classList.toggle("on"); return; }
+    if (act === "tog") {
+      var box = b.closest("[data-tags]"), tg = tagById(v), isOn;
+      b.classList.toggle("on"); isOn = b.classList.contains("on");
+      if (tg && !tg.parent) {
+        var sub = box.querySelector('[data-sub-of="' + v + '"]');
+        if (sub) { sub.hidden = !isOn; if (!isOn) sub.querySelectorAll(".chip.on").forEach(function (c) { c.classList.remove("on"); }); }
+      } else if (tg && isOn) { var pc = box.querySelector('.tops [data-v="' + tg.parent + '"]'); if (pc) pc.classList.add("on"); }
+      return;
+    }
     if (act === "reload") { boot(); return; }
     if (act === "discard") { S.plan = emptyPlan(); S.msg = ""; recompute(); render(); return; }
     if (act === "save") { save(); return; }
@@ -452,11 +493,13 @@
     if (act === "tag-retire") { S.plan.tags.push({op: "retire", id: v}); S.open = null; recompute(); render(); return; }
     if (act === "tag-add") {
       x = vals(row);
-      if (!x.label) return err(row, "Enter a label.");
-      var slug = (x.id || x.label).toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-      var id = x.parent ? x.parent + "/" + slug : slug;
-      if (tagList().some(function (y) { return y.id === id; })) return err(row, "A tag with id " + id + " already exists.");
-      S.plan.tags.push({op: "new", id: id, label: x.label, aliases: list(x.aliases), description: curly(x.description), origin: "user"}); recompute(); render(); return;
+      var parent = b.getAttribute("data-parent") || "", label = parent ? x.sub_label : x.label;
+      if (!label) return err(row, parent ? "Name the subsector." : "Name the sector.");
+      var slug = ((parent ? "" : x.id) || label).toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      var id = parent ? parent + "/" + slug : slug;
+      if (tagList().some(function (y) { return y.id === id; })) return err(row, "That one already exists.");
+      S.plan.tags.push({op: "new", id: id, label: label, aliases: list(parent ? x.sub_aliases : x.aliases), description: curly(parent ? x.sub_desc : x.description), origin: "user"});
+      S.open = parent ? "tag:" + parent : null; recompute(); render(); return;
     }
     if (act === "quick-add") {
       x = vals(row);
@@ -476,6 +519,7 @@
       S.tab = "acts"; S.open = aRef; recompute(); render(); return;
     }
   }
+  function onChange(ev) { if (ev.target.matches("[data-sec]")) { S.sec[S.tab] = ev.target.value; S.open = null; renderList(); } }
   function onInput(ev) { if (ev.target.matches("[data-q]")) { S.q = ev.target.value; var pos = ev.target.selectionStart; renderList(); var el = S.root.querySelector("[data-q]"); if (el) { el.focus(); el.setSelectionRange(pos, pos); } } }
 
   function cleanPlan() {
@@ -530,9 +574,10 @@
   function mount(opts) {
     var root = document.getElementById(opts.el || "bd");
     if (!document.getElementById("bd-css")) { var st = document.createElement("style"); st.id = "bd-css"; st.textContent = CSS; document.head.appendChild(st); }
-    S = {root: root, mode: opts.mode || "chat", data: opts.data, repo: opts.repo || "daisuke-gatanaga/bd-crm", plan: emptyPlan(), tab: "acts", filter: {}, q: "", open: null, errors: [], msg: ""};
+    S = {root: root, mode: opts.mode || "chat", data: opts.data, repo: opts.repo || "daisuke-gatanaga/bd-crm", plan: emptyPlan(), tab: "acts", filter: {}, sec: {}, q: "", open: null, errors: [], msg: ""};
     root.addEventListener("click", onClick);
     root.addEventListener("input", onInput);
+    root.addEventListener("change", onChange);
     boot();
   }
 
