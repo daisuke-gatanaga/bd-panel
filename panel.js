@@ -208,7 +208,7 @@
     var o = days(lt, today()) - cad; return o > 0 ? o : null;
   }
   function isUpcoming(a) { return (a.end_date || a.date) >= today() && ["declined", "cancelled"].indexOf(a.status) < 0; }
-  function spendYear(y) { var s = 0; allActs().forEach(function (a) { var c = a.cost || {}; if (c.usd && String(c.fy || a.date.slice(0, 4)) === y) s += +c.usd; }); return s; }
+  function spendYear(y) { var s = 0; allActs().forEach(function (a) { var c = a.cost || {}; if (a.type !== "recruiting" && c.usd && String(c.fy || a.date.slice(0, 4)) === y) s += +c.usd; }); return s; }  // recruiting spend stays out of BD spend
 
   // ---------- edits ----------
   function recompute() {
@@ -293,12 +293,22 @@
       field("Date", inp("date", a.date, "date")) + field("End date", inp("end_date", a.end_date, "date")) + field("Location", inp("location", a.location)) +
       field("Cost (USD)", inp("cost_usd", cost.usd, "number")) + field("Paid by", sel("paid_by", e.paid_by, cost.paid_by, true)) + field("BD hours", inp("hours", a.hours, "number")) +
       field("CLE credits", inp("cle_credits", (a.cle || {}).credits, "number")) + field("Worth it (1–5)", sel("rating", ["1", "2", "3", "4", "5"], a.rating ? String(a.rating) : "", true)) + field("Why", inp("rating_note", a.rating_note)) +
-      "</div><h3>Sectors</h3>" + tagPicker(a.sectors) + field("Notes", '<textarea name="notes">' + esc(a.notes) + "</textarea>") +
+      "</div>" + recruitingFields(a, e) + "<h3>Sectors</h3>" + tagPicker(a.sectors) + field("Notes", '<textarea name="notes">' + esc(a.notes) + "</textarea>") +
       (a.contacts && a.contacts.length ? '<div class="m">People: ' + esc(a.contacts.map(function (c) { return nm(c.id) + (c.new ? " (new)" : ""); }).join(", ")) + "</div>" : "") +
       (a.colleagues && a.colleagues.length ? '<div class="m">Colleagues: ' + esc(a.colleagues.join(", ")) + "</div>" : "") +
       ((a.todo_ids || []).length ? '<div class="m">' + a.todo_ids.length + " linked to-do(s)</div>" : "") +
       '<div class="err" data-err></div><div class="acts"><button data-act="apply-act" data-v="' + esc(a.id) + '">Apply</button><button data-act="open" data-v="">Close</button></div></div></div>';
     return h;
+  }
+
+  function recruitingFields(a, e) {
+    if (a.type !== "recruiting") return "";
+    var r = a.recruiting || {}, cost = a.cost || {};
+    return "<h3>Recruiting</h3>" + '<div class="grid">' +
+      field("Program", sel("rec_program", e.recruiting_programs || [], r.program, true)) + field("Students met", inp("rec_headcount", r.headcount, "number")) +
+      field("Recruiting lead", inp("rec_lead", r.recruiting_lead)) + field("Charge-to C/M", inp("cost_cm", cost.cm)) + "</div>" +
+      ((r.class_years || []).length ? '<div class="m">Class years: ' + esc(r.class_years.join(", ")) + "</div>" : "") +
+      ((r.standouts || []).length ? '<div class="m">Standouts: ' + esc(r.standouts.map(function (s) { return s.name + (s.school_org_id ? " (" + nm(s.school_org_id) + ")" : "") + (s.interest ? " – " + s.interest : ""); }).join("; ")) + "</div>" : "");
   }
 
   function rowContact(c) {
@@ -457,11 +467,23 @@
       x = vals(row);
       if (!x.date) return err(row, "Enter a date.");
       if (x.end_date && x.end_date < x.date) return err(row, "End date is before the start date.");
-      var cost = x.cost_usd || x.paid_by ? {} : null;
-      if (cost) { if (x.cost_usd) cost.usd = +x.cost_usd; if (x.paid_by) cost.paid_by = x.paid_by; cost.fy = +x.date.slice(0, 4); }
+      var cur = allActs().filter(function (q) { return q.id === v; })[0] || {}, oldCost = cur.cost || {};
+      var cm = x.cost_cm !== undefined ? (x.cost_cm || "").trim() : (oldCost.cm || "");
+      if (cm && !/^\d{4,5}-\d{2}$/.test(cm)) return err(row, "Charge-to C/M should look like 99200-49.");
+      if (x.rec_headcount && !(/^\d+$/.test(x.rec_headcount))) return err(row, "Students met must be a whole number.");
+      var cost = x.cost_usd || x.paid_by || cm ? {} : null;
+      if (cost) { if (x.cost_usd) cost.usd = +x.cost_usd; if (x.paid_by) cost.paid_by = x.paid_by; if (cm) cost.cm = cm; cost.fy = +x.date.slice(0, 4); }
+      var rec = null;
+      if (x.type === "recruiting") {
+        rec = Object.assign({}, cur.recruiting || {});
+        if (x.rec_program !== undefined) { if (x.rec_program) rec.program = x.rec_program; else delete rec.program; }
+        if (x.rec_headcount !== undefined) { if (x.rec_headcount) rec.headcount = +x.rec_headcount; else delete rec.headcount; }
+        if (x.rec_lead !== undefined) { if (x.rec_lead) rec.recruiting_lead = x.rec_lead; else delete rec.recruiting_lead; }
+        if (!Object.keys(rec).length) rec = null;
+      }
       S.open = null;
       stage("activities", v, {status: x.status, role: x.role, type: x.type, date: x.date, end_date: x.end_date, location: x.location, cost: cost, hours: num(x.hours),
-        cle: x.cle_credits ? {credits: +x.cle_credits} : null, rating: num(x.rating), rating_note: curly(x.rating_note), sectors: x._tags, notes: curly(x.notes)});
+        cle: x.cle_credits ? {credits: +x.cle_credits} : null, rating: num(x.rating), rating_note: curly(x.rating_note), sectors: x._tags, notes: curly(x.notes), recruiting: rec});
       return;
     }
     if (act === "apply-con") {
